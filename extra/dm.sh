@@ -26,5 +26,8 @@ setup_xinit()
   elif [ "${desktop}" == "xfce" ] ; then
     echo "exec ck-launch-session startxfce4" > ${release}/usr/home/${liveuser}/.xinitrc
     echo "exec ck-launch-session startxfce4" > ${release}/root/.xinitrc
+  elif [ "${desktop}" == "kde" ] ; then
+    echo "exec ck-launch-session startplasma-x11"> ${release}/usr/home/${liveuser}/.xinitrc
+    echo "exec ck-launch-session startplasma-x11" > ${release}/root/.xinitrc
   fi
 }
