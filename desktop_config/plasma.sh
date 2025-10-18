@@ -1,4 +1,7 @@
 #!/bin/sh
+#
+# FreeBSD Plasma + SDDM live setup script
+#
 
 set -e -u
 
@@ -8,11 +11,35 @@ set -e -u
 . "${cwd}/common_config/finalize.sh"
 . "${cwd}/common_config/setuser.sh"
 
+update_rcconf_dm() {
+  rc_conf="${release}/etc/rc.conf"
+
+  # Remove LightDM entries
+  sed -i '' '/^lightdm_enable=.*/d' "${rc_conf}" 2>/dev/null || true
+
+  # Remove stale SDDM entries
+  sed -i '' '/^sddm_enable=.*/d' "${rc_conf}" 2>/dev/null || true
+
+  # Enable SDDM
+  echo 'sddm_enable="YES"' >> "${rc_conf}"
+}
+
+set_localtime_from_bios() {
+  # Set timezone for live_user only (not global /etc/localtime)
+  chroot "${release}" su "${live_user}" -c "
+    # Ensure home exists
+    mkdir -p /home/${live_user}
+    # Append timezone environment variable to profile
+    if ! grep -q 'TZ=' /home/${live_user}/.profile 2>/dev/null; then
+      echo 'export TZ=UTC' >> /home/${live_user}/.profile
+    else
+      sed -i '' 's/^export TZ=.*/export TZ=UTC/' /home/${live_user}/.profile
+    fi
+  "
+}
 sddm_setup() {
-  # Path to SDDM config
   sddm_conf="${release}/etc/sddm.conf"
 
-  # Create or update SDDM configuration
   if [ ! -f "${sddm_conf}" ]; then
     cat <<EOF > "${sddm_conf}"
 [Autologin]
@@ -26,7 +53,6 @@ Current=breeze
 Numlock=on
 EOF
   else
-    # Ensure required sections exist and update keys
     grep -q "^\[Autologin\]" "${sddm_conf}" || echo "[Autologin]" >> "${sddm_conf}"
     sed -i '' "s@^User=.*@User=${live_user}@" "${sddm_conf}" || echo "User=${live_user}" >> "${sddm_conf}"
     sed -i '' "s@^Session=.*@Session=plasma@" "${sddm_conf}" || echo "Session=plasma" >> "${sddm_conf}"
@@ -39,24 +65,35 @@ EOF
   fi
 }
 
+plasma_settings() {
+  sysctl_conf="${release}/etc/sysctl.conf"
+
+  sed -i '' '/^net.local.stream.recvspace/d' "${sysctl_conf}" 2>/dev/null || true
+  sed -i '' '/^net.local.stream.sendspace/d' "${sysctl_conf}" 2>/dev/null || true
+
+  echo 'net.local.stream.recvspace=65536' >> "${sysctl_conf}"
+  echo 'net.local.stream.sendspace=65536' >> "${sysctl_conf}"
+
+}
 setup_xinit() {
-  # Disable screen locking in KDE Plasma for live_user
   chroot "${release}" su "${live_user}" -c "
     mkdir -p /home/${live_user}/.config
     kwriteconfig5 --file /home/${live_user}/.config/kscreenlockerrc --group Daemon --key Autolock false
     kwriteconfig5 --file /home/${live_user}/.config/kscreenlockerrc --group Daemon --key LockOnResume false
-    echo 'exec ck-launch-session startplasma-x11' >> /home/${live_user}/.xinitrc
-  "
-
-  # Set the same .xinitrc for root and skel
+    grep -qxF 'exec ck-launch-session startplasma-x11' /home/${live_user}/.xinitrc || echo 'exec ck-launch-session startplasma-x11' >> /home/${live_user}/.xinitrc  "
   echo "exec ck-launch-session startplasma-x11" > "${release}/root/.xinitrc"
   echo "exec ck-launch-session startplasma-x11" > "${release}/usr/share/skel/dot.xinitrc"
 }
+
+
 
 # Execute setup routines
 patch_etc_files
 community_setup_liveuser
 community_setup_autologin
+update_rcconf_dm
+set_localtime_from_bios
 sddm_setup
+plasma_settings
 setup_xinit
 final_setup
