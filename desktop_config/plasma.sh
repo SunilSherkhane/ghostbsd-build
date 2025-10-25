@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# FreeBSD Plasma + SDDM live setup script
+# FreeBSD Plasma + LightDM live setup script
 #
 
 set -e -u
@@ -14,55 +14,31 @@ set -e -u
 update_rcconf_dm() {
   rc_conf="${release}/etc/rc.conf"
 
-  # Remove LightDM entries
-  sed -i '' '/^lightdm_enable=.*/d' "${rc_conf}" 2>/dev/null || true
-
-  # Remove stale SDDM entries
-  sed -i '' '/^sddm_enable=.*/d' "${rc_conf}" 2>/dev/null || true
-
   # Enable SDDM
-  echo 'sddm_enable="YES"' >> "${rc_conf}"
+  echo 'lightdm_enable="YES"' >> "${rc_conf}"
+}
+
+lightdm_setup() {
+  lightdm_conf="${release}/usr/local/etc/lightdm/lightdm.conf"
+
+  sed -i '' "s@#greeter-session=.*@greeter-session=slick-greeter@" "${lightdm_conf}"
+  sed -i '' "s@#user-session=default@user-session=plasma@" "${lightdm_conf}"
 }
 
 set_localtime_from_bios() {
-  # Set timezone for live_user only (not global /etc/localtime)
-  chroot "${release}" su "${live_user}" -c "
-    # Ensure home exists
-    mkdir -p /home/${live_user}
-    # Append timezone environment variable to profile
-    if ! grep -q 'TZ=' /home/${live_user}/.profile 2>/dev/null; then
-      echo 'export TZ=UTC' >> /home/${live_user}/.profile
-    else
-      sed -i '' 's/^export TZ=.*/export TZ=UTC/' /home/${live_user}/.profile
-    fi
-  "
-}
-sddm_setup() {
-  sddm_conf="${release}/etc/sddm.conf"
+  tz_target="${release}/etc/localtime"
 
-  if [ ! -f "${sddm_conf}" ]; then
-    cat <<EOF > "${sddm_conf}"
-[Autologin]
-User=${live_user}
-Session=plasma
+  rm -f "${tz_target}"
 
-[Theme]
-Current=breeze
+  ln -s /usr/share/zoneinfo/UTC "${tz_target}"
 
-[General]
-Numlock=on
-EOF
-  else
-    grep -q "^\[Autologin\]" "${sddm_conf}" || echo "[Autologin]" >> "${sddm_conf}"
-    sed -i '' "s@^User=.*@User=${live_user}@" "${sddm_conf}" || echo "User=${live_user}" >> "${sddm_conf}"
-    sed -i '' "s@^Session=.*@Session=plasma@" "${sddm_conf}" || echo "Session=plasma" >> "${sddm_conf}"
+  rc_conf="${release}/etc/rc.conf"
+  sed -i '' '/^ntpd_enable=.*/d' "${rc_conf}" 2>/dev/null || true
+  sed -i '' '/^ntpd_sync_on_start=.*/d' "${rc_conf}" 2>/dev/null || true
+  sed -i '' '/^local_unbound_enable=.*/d' "${rc_conf}" 2>/dev/null || true
 
-    grep -q "^\[Theme\]" "${sddm_conf}" || echo "[Theme]" >> "${sddm_conf}"
-    sed -i '' "s@^Current=.*@Current=breeze@" "${sddm_conf}" || echo "Current=breeze" >> "${sddm_conf}"
-
-    grep -q "^\[General\]" "${sddm_conf}" || echo "[General]" >> "${sddm_conf}"
-    sed -i '' "s@^Numlock=.*@Numlock=on@" "${sddm_conf}" || echo "Numlock=on" >> "${sddm_conf}"
-  fi
+  echo 'ntpd_enable="YES"' >> "${rc_conf}"
+  echo 'ntpd_sync_on_start="YES"' >> "${rc_conf}"
 }
 
 plasma_settings() {
@@ -74,8 +50,12 @@ plasma_settings() {
   echo 'net.local.stream.recvspace=65536' >> "${sysctl_conf}"
   echo 'net.local.stream.sendspace=65536' >> "${sysctl_conf}"
 
+  # Allow regular users to mount filesystems.
+  echo 'vfs.usermount=1' >> "${sysctl_conf}"
 }
+
 setup_xinit() {
+  # Configure Plasma session settings and fallback .xinitrc
   chroot "${release}" su "${live_user}" -c "
     mkdir -p /home/${live_user}/.config
     kwriteconfig5 --file /home/${live_user}/.config/kscreenlockerrc --group Daemon --key Autolock false
@@ -85,15 +65,55 @@ setup_xinit() {
   echo "exec ck-launch-session startplasma-x11" > "${release}/usr/share/skel/dot.xinitrc"
 }
 
+configure_user_groups() {
+  # Add the live user to necessary groups for system and hardware access
+  chroot "${release}" pw usermod "${live_user}" -G wheel,operator,video
+}
 
+configure_devfs() {
+  devfs_rules="${release}/etc/devfs.rules"
+  rc_conf="${release}/etc/rc.conf"
+
+  # Create a local ruleset for devfs
+  echo '[localrules=10]' >> "${devfs_rules}"
+  # Add rule to allow users in the 'operator' group to access USB storage devices
+  echo "add path 'da*' mode 0666 group operator" >> "${devfs_rules}"
+
+  # Enable this ruleset on boot
+  echo 'devfs_system_ruleset="localrules"' >> "${rc_conf}"
+}
+
+setup_polkit_rules() {
+  polkit_rules_dir="${release}/usr/local/etc/polkit-1/rules.d"
+  polkit_rules_file="${polkit_rules_dir}/10-mount.rules"
+
+  # Ensure the directory exists
+  mkdir -p "${polkit_rules_dir}"
+
+  # Create the polkit rule file for passwordless mounting
+  cat <<EOF > "${polkit_rules_file}"
+// Allow udisks2 to mount devices without authentication
+// for users in the "wheel" group.
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.udisks2.filesystem-mount-system" ||
+         action.id == "org.freedesktop.udisks2.filesystem-mount") &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+}
 
 # Execute setup routines
 patch_etc_files
 community_setup_liveuser
 community_setup_autologin
+configure_user_groups
+configure_devfs
 update_rcconf_dm
+lightdm_setup
 set_localtime_from_bios
-sddm_setup
 plasma_settings
+setup_polkit_rules
 setup_xinit
 final_setup
