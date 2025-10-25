@@ -24,3 +24,4 @@ add path 'uscan[0-9]*' mode 666
 add path 'uvisor[0-9]*' mode 666
 add path 'video[0-9]*' mode 666
 add path 'xpt[0-9]*' mode 666
+add path 'da*' mode 0666 
